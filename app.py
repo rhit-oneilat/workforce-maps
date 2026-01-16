@@ -92,8 +92,6 @@ if map_type == "Gulf Coast Region (13 Counties)":
     display_gdf = main_gdf
     display_isds = None
     title = "Workforce Solutions Gulf Coast Region"
-
-    # FIX: Force safer zoom for large region
     safe_zoom = 10
 
 else: # Brazoria
@@ -107,8 +105,6 @@ else: # Brazoria
     display_gdf = brazoria_gdf
     display_isds = clipped_isds
     title = "Brazoria County: City Limits & ISDs"
-
-    # FIX: Allow higher zoom for small region
     safe_zoom = 12
 
 display_cities = clipped_cities[clipped_cities['area_sq_mi'] >= min_area]
@@ -167,7 +163,6 @@ with tab2:
             my_bar.progress(10, text="Setting up canvas...")
             fig, ax = plt.subplots(figsize=(24, 24))
 
-            # --- CRITICAL FIX FOR BLANK PDF ---
             # Rasterize background (Z=1), keep Vectors (Z>1)
             ax.set_rasterization_zorder(1)
 
@@ -177,11 +172,10 @@ with tab2:
             ax.set_ylim(miny, maxy)
 
             # STEP 2: DOWNLOAD TILES
-            # Use safe_zoom calculated above
             my_bar.progress(25, text=f"Downloading background tiles (Zoom {safe_zoom})...")
             cx.add_basemap(ax, source=cx.providers.CartoDB.PositronNoLabels, zoom=safe_zoom, zorder=0)
 
-            # STEP 3: PLOT VECTORS (Z-Order > 1 to stay Vector)
+            # STEP 3: PLOT VECTORS
             my_bar.progress(50, text="Plotting counties and districts...")
 
             # Draw ISDs
@@ -217,4 +211,42 @@ with tab2:
                             zorder=5, path_effects=[pe.withStroke(linewidth=4, foreground="white")])
 
             plt.title(title, fontsize=font_size_header)
-            plt.axis
+            plt.axis('off')
+
+            # STEP 4: ADJUST TEXT
+            if use_adjust_text:
+                my_bar.progress(70, text="Optimizing label placement (Physics engine)...")
+                all_texts = city_texts + (isd_texts if display_isds is not None else [])
+                if all_texts:
+                    adjust_text(
+                        all_texts, ax=ax, expand_points=(1.2, 1.2),
+                        arrowprops=dict(arrowstyle='-', color='gray', alpha=0.5)
+                    )
+
+            # STEP 5: SAVE FILES
+            my_bar.progress(85, text=f"Saving high-res image ({export_dpi} DPI)...")
+
+            img_png = io.BytesIO()
+            plt.savefig(img_png, format='png', dpi=export_dpi, bbox_inches='tight')
+
+            my_bar.progress(95, text="Generating Vector PDF...")
+            img_pdf = io.BytesIO()
+            plt.savefig(img_pdf, format='pdf', dpi=300, bbox_inches='tight')
+
+            plt.close()
+
+            my_bar.progress(100, text="Complete!")
+            st.success("Rendering Complete!")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.image(img_png, caption=f"Preview ({export_dpi} DPI)")
+                st.download_button("📥 Download Image (PNG)", data=img_png, file_name="map.png", mime="image/png")
+
+            with col2:
+                st.info("Best for Printing:")
+                st.download_button("📄 Download Vector (PDF)", data=img_pdf, file_name="map.pdf", mime="application/pdf")
+
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
+            my_bar.empty()
