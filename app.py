@@ -7,27 +7,28 @@ import folium
 from streamlit_folium import st_folium
 from adjustText import adjust_text
 import io
+from PIL import Image
+
+# --- CONFIG ---
+# Disarm the "Decompression Bomb" check.
+# 450 DPI = ~116 Million pixels. Standard limit is ~89M.
+Image.MAX_IMAGE_PIXELS = None
 
 st.set_page_config(layout="wide", page_title="Workforce Solutions Map Generator")
 
 # --- HELPER: CLEAN GEOMETRY ---
+# Removes junk geometry that causes "KeyError: coordinates"
 def clean_geoms(gdf):
-    """
-    Removes empty geometries and GeometryCollections that break Folium.
-    Keeps only Polygons and MultiPolygons.
-    """
     if gdf is None or gdf.empty:
         return gdf
-    # 1. Remove empty rows
     gdf = gdf[~gdf.is_empty]
-    # 2. Keep only valid area shapes (Polygons), ignoring Points/Lines from clip artifacts
+    # Keep only valid area shapes (Polygons)
     gdf = gdf[gdf.geometry.type.isin(['Polygon', 'MultiPolygon'])]
     return gdf
 
 # --- CACHED DATA LOADING ---
 @st.cache_data
 def load_data():
-    # Update paths to your actual files
     county_path = 'texas_counties.shp'
     place_path = 'Cities.shp'
     isd_path = 'tl_2025_48_unsd.shp'
@@ -40,10 +41,9 @@ def load_data():
 
 try:
     gdf_counties, gdf_places, gdf_isds = load_data()
-
     city_col = 'CITY_NM' if 'CITY_NM' in gdf_places.columns else 'NAME'
 
-    # Calculate Area
+    # Calculate Area for filtering
     gdf_places = gdf_places.to_crs(epsg=3857)
     gdf_places['area_sq_mi'] = gdf_places.geometry.area * 3.86102e-7
 
@@ -76,7 +76,10 @@ text_color = st.sidebar.color_picker("City Label Color", "#8B0000")
 isd_outline_color = st.sidebar.color_picker("ISD Color (Brazoria)", "#000080")
 
 st.sidebar.subheader("📐 Quality & Dimensions")
-export_dpi = st.sidebar.select_slider("Export Resolution (DPI)", options=[150, 300, 450, 600], value=300)
+# FIX: Options capped at 450 DPI.
+export_dpi = st.sidebar.select_slider("Image Resolution (DPI)", options=[150, 300, 450], value=300)
+st.sidebar.info("💡 **Pro Tip:** For professional printing, use the **PDF Download** button. It keeps text labels infinitely sharp!")
+
 font_size_header = st.sidebar.slider("Title Font Size", 10, 80, 24)
 font_size_labels = st.sidebar.slider("City Label Size", 4, 30, 8)
 fill_opacity = st.sidebar.slider("Fill Opacity", 0.0, 1.0, 0.4)
@@ -86,11 +89,7 @@ fill_opacity = st.sidebar.slider("Fill Opacity", 0.0, 1.0, 0.4)
 if map_type == "Gulf Coast Region (13 Counties)":
     main_gdf = region_gdf
     main_gdf_3857 = main_gdf.to_crs(epsg=3857)
-
-    clipped_cities = gpd.clip(gdf_places, main_gdf_3857)
-    # CLEAN THE CITIES
-    clipped_cities = clean_geoms(clipped_cities)
-
+    clipped_cities = clean_geoms(gpd.clip(gdf_places, main_gdf_3857))
     display_gdf = main_gdf
     display_isds = None
     title = "Workforce Solutions Gulf Coast Region"
@@ -99,48 +98,28 @@ else: # Brazoria
     brazoria_gdf = region_gdf[region_gdf['NAME'] == 'Brazoria']
     brazoria_3857 = brazoria_gdf.to_crs(epsg=3857)
 
-    # Clip ISDs
     isds_3857 = gdf_isds.to_crs(epsg=3857)
-    clipped_isds = gpd.clip(isds_3857, brazoria_3857)
-    # FIX: Clean the ISDs to remove GeometryCollections
-    clipped_isds = clean_geoms(clipped_isds)
-
-    # Clip Cities
-    clipped_cities = gpd.clip(gdf_places, brazoria_3857)
-    # FIX: Clean the Cities too
-    clipped_cities = clean_geoms(clipped_cities)
+    clipped_isds = clean_geoms(gpd.clip(isds_3857, brazoria_3857))
+    clipped_cities = clean_geoms(gpd.clip(gdf_places, brazoria_3857))
 
     display_gdf = brazoria_gdf
     display_isds = clipped_isds
     title = "Brazoria County: City Limits & ISDs"
 
-# Apply Area Filter
 display_cities = clipped_cities[clipped_cities['area_sq_mi'] >= min_area]
 
 # --- TAB 1: INTERACTIVE MAP ---
-tab1, tab2 = st.tabs(["🗺️ Interactive Map", "🖨️ High-Res Print Preview"])
+tab1, tab2 = st.tabs(["🗺️ Interactive Map", "🖨️ Print Export (PDF/PNG)"])
 
 with tab1:
     st.subheader(f"Interactive View: {title}")
-
-    m = folium.Map(
-        location=[29.5, -95.5],
-        zoom_start=8,
-        tiles=None
-    )
-    folium.TileLayer(
-        tiles="CartoDB positron",
-        name="Light Map",
-        detect_retina=True
-    ).add_to(m)
+    m = folium.Map(location=[29.5, -95.5], zoom_start=8, tiles=None)
+    folium.TileLayer(tiles="CartoDB positron", name="Light Map", detect_retina=True).add_to(m)
 
     folium.GeoJson(
         display_gdf.to_crs(epsg=4326),
         style_function=lambda x: {
-            'fillColor': fill_color_hex,
-            'color': outline_color,
-            'weight': 2,
-            'fillOpacity': fill_opacity
+            'fillColor': fill_color_hex, 'color': outline_color, 'weight': 2, 'fillOpacity': fill_opacity
         },
         tooltip=folium.GeoJsonTooltip(fields=['NAME'], aliases=['County:'])
     ).add_to(m)
@@ -149,26 +128,18 @@ with tab1:
         folium.GeoJson(
             display_isds.to_crs(epsg=4326),
             style_function=lambda x: {
-                'fillColor': 'orange',
-                'color': isd_outline_color,
-                'weight': 1,
-                'dashArray': '5, 5',
-                'fillOpacity': 0.1
+                'fillColor': 'orange', 'color': isd_outline_color, 'weight': 1, 'dashArray': '5, 5', 'fillOpacity': 0.1
             },
             tooltip=folium.GeoJsonTooltip(fields=['NAME'], aliases=['ISD:'])
         ).add_to(m)
 
-    # City Markers
     if not display_cities.empty:
         cities_4326 = display_cities.to_crs(epsg=4326)
         for idx, row in cities_4326.iterrows():
-            # Safety check for geometry type before centroid
-            if row.geometry:
+            if row.geometry and not row.geometry.is_empty:
                 folium.CircleMarker(
                     location=[row.geometry.centroid.y, row.geometry.centroid.x],
-                    radius=3,
-                    color='red',
-                    fill=True,
+                    radius=3, color='red', fill=True,
                     tooltip=f"{row[city_col]} ({row['area_sq_mi']:.1f} sq mi)"
                 ).add_to(m)
 
@@ -176,13 +147,13 @@ with tab1:
 
 # --- TAB 2: STATIC PRINT ---
 with tab2:
-    st.subheader("Generate High-Resolution Print")
-    st.write(f"Click below to render at **{export_dpi} DPI**. Note: The preview below is compressed for speed; the downloaded file will be sharp.")
+    st.subheader("Generate Print Files")
+    st.write("Click below to render. **Use PDF for infinite resolution labels.**")
 
     use_adjust_text = st.checkbox("Auto-Adjust Labels (Prevents Overlap)", value=True)
 
-    if st.button("Generate Print Image"):
-        with st.spinner("Rendering... this takes longer at high DPI..."):
+    if st.button("Generate Map"):
+        with st.spinner("Rendering Map..."):
 
             fig, ax = plt.subplots(figsize=(24, 24))
 
@@ -191,8 +162,10 @@ with tab2:
             ax.set_xlim(minx, maxx)
             ax.set_ylim(miny, maxy)
 
-            cx.add_basemap(ax, source=cx.providers.CartoDB.PositronNoLabels, zoom=10)
+            # Basemap
+            cx.add_basemap(ax, source=cx.providers.CartoDB.PositronNoLabels)
 
+            # Draw ISDs
             if display_isds is not None and not display_isds.empty:
                 display_isds.plot(ax=ax, column='NAME', cmap='Set3', alpha=fill_opacity, zorder=2)
                 display_isds.plot(ax=ax, facecolor='none', edgecolor=isd_outline_color, linestyle='--', linewidth=1.5, zorder=3)
@@ -204,11 +177,13 @@ with tab2:
                             zorder=4, path_effects=[pe.withStroke(linewidth=3, foreground="white")])
                     isd_texts.append(t)
 
+            # Draw Region
             if map_type == "Gulf Coast Region (13 Counties)":
                 display_gdf.to_crs(epsg=3857).plot(ax=ax, column='NAME', cmap='Pastel1', alpha=fill_opacity, zorder=2)
 
             display_gdf.to_crs(epsg=3857).plot(ax=ax, facecolor='none', edgecolor=outline_color, linewidth=3, zorder=4)
 
+            # Draw Cities
             display_cities.plot(ax=ax, facecolor='gray', edgecolor='none', alpha=0.1, zorder=3)
 
             city_texts = []
@@ -226,21 +201,30 @@ with tab2:
                 all_texts = city_texts + (isd_texts if display_isds is not None else [])
                 if all_texts:
                     adjust_text(
-                        all_texts,
-                        ax=ax,
-                        expand_points=(1.2, 1.2),
+                        all_texts, ax=ax, expand_points=(1.2, 1.2),
                         arrowprops=dict(arrowstyle='-', color='gray', alpha=0.5)
                     )
 
             plt.title(title, fontsize=font_size_header)
             plt.axis('off')
 
-            fn = "map_export.png"
-            img = io.BytesIO()
-            plt.savefig(img, format='png', dpi=export_dpi)
+            # --- SAVE PNG (RASTER) ---
+            img_png = io.BytesIO()
+            plt.savefig(img_png, format='png', dpi=export_dpi, bbox_inches='tight')
+
+            # --- SAVE PDF (VECTOR) ---
+            img_pdf = io.BytesIO()
+            plt.savefig(img_pdf, format='pdf', bbox_inches='tight')
+
             plt.close()
 
-            st.success("Map Rendered!")
-            st.image(img, caption=f"Preview (Download for full {export_dpi} DPI resolution)")
+            st.success("Rendering Complete!")
 
-            st.download_button("📥 Download High-Res Map", data=img, file_name=f"workforce_map_{export_dpi}dpi.png", mime="image/png")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.image(img_png, caption=f"Preview ({export_dpi} DPI)")
+                st.download_button("📥 Download Image (PNG)", data=img_png, file_name="map.png", mime="image/png")
+
+            with col2:
+                st.info("Best for Printing:")
+                st.download_button("📄 Download Vector (PDF)", data=img_pdf, file_name="map.pdf", mime="application/pdf")
