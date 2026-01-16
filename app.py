@@ -7,10 +7,18 @@ import folium
 from streamlit_folium import st_folium
 from adjustText import adjust_text
 import io
+import os
 from PIL import Image
 
 # --- CONFIG ---
 Image.MAX_IMAGE_PIXELS = None
+
+# --- CACHE SETUP ---
+# Saves tiles locally so you don't re-download them every time
+cache_dir = os.path.join(os.getcwd(), "tile_cache")
+if not os.path.exists(cache_dir):
+    os.makedirs(cache_dir)
+cx.set_cache_dir(cache_dir)
 
 st.set_page_config(layout="wide", page_title="Workforce Solutions Map Generator")
 
@@ -69,19 +77,11 @@ outline_color = st.sidebar.color_picker("Outline Color", "#000000")
 text_color = st.sidebar.color_picker("City Label Color", "#8B0000")
 isd_outline_color = st.sidebar.color_picker("ISD Color (Brazoria)", "#000080")
 
-st.sidebar.subheader("📐 Quality & Detail")
-export_dpi = st.sidebar.select_slider("Image Resolution (DPI)", options=[150, 300, 450], value=300)
+st.sidebar.subheader("📐 Quality")
+export_dpi = st.sidebar.select_slider("Image Resolution (DPI)", options=[150, 300, 600], value=300)
 
-# FIX: The value must match the option string EXACTLY
-detail_level = st.sidebar.select_slider(
-    "Background Map Detail",
-    options=["Low (Highways)", "Medium (Major Streets)", "High (Every Street)"],
-    value="Medium (Major Streets)"
-)
-st.sidebar.caption("⚠️ 'High' detail forces the map to download thousands of street tiles. It takes longer!")
-
-font_size_header = st.sidebar.slider("Title Font Size", 10, 80, 24)
-font_size_labels = st.sidebar.slider("City Label Size", 4, 30, 8)
+font_size_header = st.sidebar.slider("Title Font Size", 10, 100, 32)
+font_size_labels = st.sidebar.slider("City Label Size", 4, 40, 10)
 fill_opacity = st.sidebar.slider("Fill Opacity", 0.0, 1.0, 0.4)
 
 # --- MAP PREPARATION ---
@@ -107,14 +107,6 @@ else: # Brazoria
     title = "Brazoria County: City Limits & ISDs"
 
 display_cities = clipped_cities[clipped_cities['area_sq_mi'] >= min_area]
-
-# Determine Zoom Level
-if detail_level == "Low (Highways)":
-    zoom_lvl = 10
-elif detail_level == "Medium (Major Streets)":
-    zoom_lvl = 12
-else:
-    zoom_lvl = 14 # High detail
 
 # --- TAB 1: INTERACTIVE MAP ---
 tab1, tab2 = st.tabs(["🗺️ Interactive Map", "🖨️ Print Export (PDF/PNG)"])
@@ -156,22 +148,36 @@ with tab1:
 # --- TAB 2: STATIC PRINT ---
 with tab2:
     st.subheader("Generate Print Files")
-    st.write(f"Click below to render at **{export_dpi} DPI**. **Use 'High' detail for street-level background.**")
+    st.write(f"Click below to render at **{export_dpi} DPI**.")
 
     use_adjust_text = st.checkbox("Auto-Adjust Labels (Prevents Overlap)", value=True)
 
     if st.button("Generate Map"):
-        with st.spinner(f"Downloading tiles (Zoom {zoom_lvl}) and rendering... please wait..."):
+        progress_text = "Starting engine..."
+        my_bar = st.progress(0, text=progress_text)
 
+        try:
+            # STEP 1: SETUP
+            my_bar.progress(10, text="Setting up canvas...")
             fig, ax = plt.subplots(figsize=(24, 24))
+
+            # --- CRITICAL FIX FOR BLANK PDF ---
+            # This tells matplotlib: "Rasterize everything below Z-Order 1 (the map tiles),
+            # but keep everything above Z-Order 1 (Text, Lines) as Vectors."
+            ax.set_rasterization_zorder(1)
 
             bounds_gdf = display_gdf.to_crs(epsg=3857)
             minx, miny, maxx, maxy = bounds_gdf.total_bounds
             ax.set_xlim(minx, maxx)
             ax.set_ylim(miny, maxy)
 
-            # FORCE HIGH DETAIL ZOOM
-            cx.add_basemap(ax, source=cx.providers.CartoDB.PositronNoLabels, zoom=zoom_lvl)
+            # STEP 2: DOWNLOAD TILES
+            # We use Zoom 11 or 12 as a safe "Medium" default that won't crash
+            my_bar.progress(25, text="Downloading background tiles...")
+            cx.add_basemap(ax, source=cx.providers.CartoDB.PositronNoLabels, zoom=12, zorder=0)
+
+            # STEP 3: PLOT VECTORS (Z-Order > 1 to stay Vector)
+            my_bar.progress(50, text="Plotting counties and districts...")
 
             # Draw ISDs
             if display_isds is not None and not display_isds.empty:
@@ -205,7 +211,12 @@ with tab2:
                     ax.text(x, y, label.upper(), fontsize=font_size_labels+4, color=outline_color, ha='center', weight='heavy',
                             zorder=5, path_effects=[pe.withStroke(linewidth=4, foreground="white")])
 
+            plt.title(title, fontsize=font_size_header)
+            plt.axis('off')
+
+            # STEP 4: ADJUST TEXT
             if use_adjust_text:
+                my_bar.progress(70, text="Optimizing label placement (Physics engine)...")
                 all_texts = city_texts + (isd_texts if display_isds is not None else [])
                 if all_texts:
                     adjust_text(
@@ -213,19 +224,22 @@ with tab2:
                         arrowprops=dict(arrowstyle='-', color='gray', alpha=0.5)
                     )
 
-            plt.title(title, fontsize=font_size_header)
-            plt.axis('off')
+            # STEP 5: SAVE FILES
+            my_bar.progress(85, text=f"Saving high-res image ({export_dpi} DPI)...")
 
             # --- SAVE PNG ---
             img_png = io.BytesIO()
             plt.savefig(img_png, format='png', dpi=export_dpi, bbox_inches='tight')
 
             # --- SAVE PDF ---
+            # DPI=300 here controls the resolution of the rasterized background layer inside the PDF
+            my_bar.progress(95, text="Generating Vector PDF...")
             img_pdf = io.BytesIO()
-            plt.savefig(img_pdf, format='pdf', bbox_inches='tight')
+            plt.savefig(img_pdf, format='pdf', dpi=300, bbox_inches='tight')
 
             plt.close()
 
+            my_bar.progress(100, text="Complete!")
             st.success("Rendering Complete!")
 
             col1, col2 = st.columns(2)
@@ -236,3 +250,7 @@ with tab2:
             with col2:
                 st.info("Best for Printing:")
                 st.download_button("📄 Download Vector (PDF)", data=img_pdf, file_name="map.pdf", mime="application/pdf")
+
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
+            my_bar.empty()
