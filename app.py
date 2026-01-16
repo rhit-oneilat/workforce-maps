@@ -11,18 +11,15 @@ from PIL import Image
 
 # --- CONFIG ---
 # Disarm the "Decompression Bomb" check.
-# 450 DPI = ~116 Million pixels. Standard limit is ~89M.
 Image.MAX_IMAGE_PIXELS = None
 
 st.set_page_config(layout="wide", page_title="Workforce Solutions Map Generator")
 
 # --- HELPER: CLEAN GEOMETRY ---
-# Removes junk geometry that causes "KeyError: coordinates"
 def clean_geoms(gdf):
     if gdf is None or gdf.empty:
         return gdf
     gdf = gdf[~gdf.is_empty]
-    # Keep only valid area shapes (Polygons)
     gdf = gdf[gdf.geometry.type.isin(['Polygon', 'MultiPolygon'])]
     return gdf
 
@@ -43,7 +40,7 @@ try:
     gdf_counties, gdf_places, gdf_isds = load_data()
     city_col = 'CITY_NM' if 'CITY_NM' in gdf_places.columns else 'NAME'
 
-    # Calculate Area for filtering
+    # Calculate Area
     gdf_places = gdf_places.to_crs(epsg=3857)
     gdf_places['area_sq_mi'] = gdf_places.geometry.area * 3.86102e-7
 
@@ -75,10 +72,16 @@ outline_color = st.sidebar.color_picker("Outline Color", "#000000")
 text_color = st.sidebar.color_picker("City Label Color", "#8B0000")
 isd_outline_color = st.sidebar.color_picker("ISD Color (Brazoria)", "#000080")
 
-st.sidebar.subheader("📐 Quality & Dimensions")
-# FIX: Options capped at 450 DPI.
+st.sidebar.subheader("📐 Quality & Detail")
 export_dpi = st.sidebar.select_slider("Image Resolution (DPI)", options=[150, 300, 450], value=300)
-st.sidebar.info("💡 **Pro Tip:** For professional printing, use the **PDF Download** button. It keeps text labels infinitely sharp!")
+
+# NEW: Detail Slider
+detail_level = st.sidebar.select_slider(
+    "Background Map Detail",
+    options=["Low (Highways)", "Medium (Major Streets)", "High (Every Street)"],
+    value="Medium"
+)
+st.sidebar.caption("⚠️ 'High' detail forces the map to download thousands of street tiles. It takes longer!")
 
 font_size_header = st.sidebar.slider("Title Font Size", 10, 80, 24)
 font_size_labels = st.sidebar.slider("City Label Size", 4, 30, 8)
@@ -108,12 +111,20 @@ else: # Brazoria
 
 display_cities = clipped_cities[clipped_cities['area_sq_mi'] >= min_area]
 
+# Determine Zoom Level based on Slider
+if detail_level == "Low (Highways)":
+    zoom_lvl = 10
+elif detail_level == "Medium (Major Streets)":
+    zoom_lvl = 12
+else:
+    zoom_lvl = 14 # Shows local streets
+
 # --- TAB 1: INTERACTIVE MAP ---
 tab1, tab2 = st.tabs(["🗺️ Interactive Map", "🖨️ Print Export (PDF/PNG)"])
 
 with tab1:
     st.subheader(f"Interactive View: {title}")
-    m = folium.Map(location=[29.5, -95.5], zoom_start=8, tiles=None)
+    m = folium.Map(location=[29.5, -95.5], zoom_start=9, tiles=None)
     folium.TileLayer(tiles="CartoDB positron", name="Light Map", detect_retina=True).add_to(m)
 
     folium.GeoJson(
@@ -148,12 +159,12 @@ with tab1:
 # --- TAB 2: STATIC PRINT ---
 with tab2:
     st.subheader("Generate Print Files")
-    st.write("Click below to render. **Use PDF for infinite resolution labels.**")
+    st.write("Click below to render. **Use 'High' detail for street-level background.**")
 
     use_adjust_text = st.checkbox("Auto-Adjust Labels (Prevents Overlap)", value=True)
 
     if st.button("Generate Map"):
-        with st.spinner("Rendering Map..."):
+        with st.spinner(f"Downloading tiles (Zoom Level {zoom_lvl})... this might take a moment..."):
 
             fig, ax = plt.subplots(figsize=(24, 24))
 
@@ -162,8 +173,8 @@ with tab2:
             ax.set_xlim(minx, maxx)
             ax.set_ylim(miny, maxy)
 
-            # Basemap
-            cx.add_basemap(ax, source=cx.providers.CartoDB.PositronNoLabels)
+            # FORCE HIGH DETAIL ZOOM
+            cx.add_basemap(ax, source=cx.providers.CartoDB.PositronNoLabels, zoom=zoom_lvl)
 
             # Draw ISDs
             if display_isds is not None and not display_isds.empty:
@@ -208,11 +219,11 @@ with tab2:
             plt.title(title, fontsize=font_size_header)
             plt.axis('off')
 
-            # --- SAVE PNG (RASTER) ---
+            # --- SAVE PNG ---
             img_png = io.BytesIO()
             plt.savefig(img_png, format='png', dpi=export_dpi, bbox_inches='tight')
 
-            # --- SAVE PDF (VECTOR) ---
+            # --- SAVE PDF ---
             img_pdf = io.BytesIO()
             plt.savefig(img_pdf, format='pdf', bbox_inches='tight')
 
