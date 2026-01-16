@@ -10,7 +10,6 @@ import io
 from PIL import Image
 
 # --- CONFIG ---
-# Disarm the "Decompression Bomb" check.
 Image.MAX_IMAGE_PIXELS = None
 
 st.set_page_config(layout="wide", page_title="Workforce Solutions Map Generator")
@@ -40,11 +39,9 @@ try:
     gdf_counties, gdf_places, gdf_isds = load_data()
     city_col = 'CITY_NM' if 'CITY_NM' in gdf_places.columns else 'NAME'
 
-    # Calculate Area
     gdf_places = gdf_places.to_crs(epsg=3857)
     gdf_places['area_sq_mi'] = gdf_places.geometry.area * 3.86102e-7
 
-    # Filter Region
     target_counties = [
         'Austin', 'Brazoria', 'Chambers', 'Colorado', 'Fort Bend',
         'Galveston', 'Harris', 'Liberty', 'Matagorda', 'Montgomery',
@@ -75,11 +72,11 @@ isd_outline_color = st.sidebar.color_picker("ISD Color (Brazoria)", "#000080")
 st.sidebar.subheader("📐 Quality & Detail")
 export_dpi = st.sidebar.select_slider("Image Resolution (DPI)", options=[150, 300, 450], value=300)
 
-# NEW: Detail Slider
+# FIX: The value must match the option string EXACTLY
 detail_level = st.sidebar.select_slider(
     "Background Map Detail",
     options=["Low (Highways)", "Medium (Major Streets)", "High (Every Street)"],
-    value="Medium"
+    value="Medium (Major Streets)"
 )
 st.sidebar.caption("⚠️ 'High' detail forces the map to download thousands of street tiles. It takes longer!")
 
@@ -111,13 +108,13 @@ else: # Brazoria
 
 display_cities = clipped_cities[clipped_cities['area_sq_mi'] >= min_area]
 
-# Determine Zoom Level based on Slider
+# Determine Zoom Level
 if detail_level == "Low (Highways)":
     zoom_lvl = 10
 elif detail_level == "Medium (Major Streets)":
     zoom_lvl = 12
 else:
-    zoom_lvl = 14 # Shows local streets
+    zoom_lvl = 14 # High detail
 
 # --- TAB 1: INTERACTIVE MAP ---
 tab1, tab2 = st.tabs(["🗺️ Interactive Map", "🖨️ Print Export (PDF/PNG)"])
@@ -159,12 +156,12 @@ with tab1:
 # --- TAB 2: STATIC PRINT ---
 with tab2:
     st.subheader("Generate Print Files")
-    st.write("Click below to render. **Use 'High' detail for street-level background.**")
+    st.write(f"Click below to render at **{export_dpi} DPI**. **Use 'High' detail for street-level background.**")
 
     use_adjust_text = st.checkbox("Auto-Adjust Labels (Prevents Overlap)", value=True)
 
     if st.button("Generate Map"):
-        with st.spinner(f"Downloading tiles (Zoom Level {zoom_lvl})... this might take a moment..."):
+        with st.spinner(f"Downloading tiles (Zoom {zoom_lvl}) and rendering... please wait..."):
 
             fig, ax = plt.subplots(figsize=(24, 24))
 
